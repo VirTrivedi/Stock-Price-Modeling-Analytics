@@ -1,6 +1,6 @@
 import os
+import subprocess
 from parse_book_fills import process_file as process_fills_file
-from parse_book_tops import process_file as process_tops_file
 
 def process_folder(folder_path, date, feed):
     """Processes all .bin files in the given folder using the appropriate script."""
@@ -16,7 +16,6 @@ def process_folder(folder_path, date, feed):
     # Loop through all .bin files in the input folder
     for file_name in os.listdir(input_folder):
         if file_name.endswith(".bin"):
-            file_path = os.path.join(input_folder, file_name)
             symbol = file_name.split(".")[2]            
             
             # Determine if the file is a fills or tops file based on its name
@@ -29,11 +28,15 @@ def process_folder(folder_path, date, feed):
                     plot=False)
             elif "tops" in file_name.lower():
                 print(f"Processing tops file: {file_name}")
-                process_tops_file(
-                    date=date,
-                    feed=feed,
-                    symbol=symbol,
-                    plot=False)
+                # Call the C++ executable for processing tops files
+                cpp_executable = "./process_tops"  # Path to the compiled C++ executable
+                try:
+                    subprocess.run(
+                        [cpp_executable, date, feed, symbol],
+                        check=True
+                    )
+                except subprocess.CalledProcessError as e:
+                    print(f"Error processing tops file {file_name} with C++ code: {e}")            
             else:
                 print(f"Skipping unrecognized file: {file_name}")
 
