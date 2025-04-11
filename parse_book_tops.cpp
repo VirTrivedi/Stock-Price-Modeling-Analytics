@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
+#include <thread>
 
 // Define the header format
 struct Header {
@@ -56,36 +57,42 @@ bool read_header(std::ifstream &file, Header &header) {
 
 // Function to read data
 void read_data(std::ifstream &file, uint32_t number_of_tops, std::vector<uint64_t> &timestamps,
-               std::vector<std::vector<double>> &bid_prices, std::vector<std::vector<double>> &ask_prices) {
+    std::vector<std::vector<double>> &bid_prices, std::vector<std::vector<double>> &ask_prices) {
     bid_prices.resize(3);
     ask_prices.resize(3);
 
-    for (uint32_t i = 0; i < number_of_tops; ++i) {
-        BookTop book_top;
-        file.read(reinterpret_cast<char *>(&book_top), sizeof(BookTop));
-        if (file.gcount() < sizeof(BookTop)) {
-            std::cerr << "Warning: Reached end of file earlier than expected." << std::endl;
-            break;
+    // Allocate a buffer to read multiple BookTop structures at once
+    const size_t buffer_size = 1024; // Number of BookTop structures to read at once
+    std::vector<BookTop> buffer(buffer_size);
+
+    uint32_t tops_read = 0;
+    while (tops_read < number_of_tops) {
+        size_t to_read = std::min(buffer_size, static_cast<size_t>(number_of_tops - tops_read));
+        file.read(reinterpret_cast<char *>(buffer.data()), to_read * sizeof(BookTop));
+        size_t read_count = file.gcount() / sizeof(BookTop);
+
+        for (size_t i = 0; i < read_count; ++i) {
+            const BookTop &book_top = buffer[i];
+            timestamps.push_back(book_top.ts);
+
+            for (int level = 0; level < 3; ++level) {
+                if (book_top.bid_price[level] != 0 && book_top.bid_qty[level] != 0) {
+                    bid_prices[level].push_back(book_top.bid_price[level] / 1e9);
+                } else {
+                    bid_prices[level].push_back(NAN);
+                }
+
+                if (book_top.ask_price[level] != 0 && book_top.ask_qty[level] != 0) {
+                    ask_prices[level].push_back(book_top.ask_price[level] / 1e9);
+                } else {
+                    ask_prices[level].push_back(NAN);
+                }
+            }
         }
 
-        timestamps.push_back(book_top.ts);
-
-        for (int level = 0; level < 3; ++level) {
-            if (book_top.bid_price[level] != 0 && book_top.bid_qty[level] != 0) {
-                bid_prices[level].push_back(book_top.bid_price[level] / 1e9);
-            } else {
-                bid_prices[level].push_back(NAN);
-            }
-
-            if (book_top.ask_price[level] != 0 && book_top.ask_qty[level] != 0) {
-                ask_prices[level].push_back(book_top.ask_price[level] / 1e9);
-            } else {
-                ask_prices[level].push_back(NAN);
-            }
-        }
+        tops_read += read_count;
     }
 }
-
 // Function to create and store bars
 void create_and_store_bars(const std::vector<uint64_t> &timestamps, const std::vector<double> &prices,
                            const std::string &output_file, uint64_t &last_timestamp) {
@@ -131,20 +138,24 @@ void process_and_store_bars(const std::vector<uint64_t> &timestamps,
     const std::vector<std::vector<double>> &bid_prices,
     const std::vector<std::vector<double>> &ask_prices,
     const std::string &output_file_path_base, const std::string &symbol) {
-
     uint64_t last_bid_timestamps[3] = {0, 0, 0};
     uint64_t last_ask_timestamps[3] = {0, 0, 0};
 
-    for (int level = 0; level < 3; ++level) {
-        // Construct file paths for bid and ask bars
+    auto process_level = [&](int level) {
         std::string bid_bar_file = output_file_path_base + "bid_bars_L" + std::to_string(level + 1) + "." + symbol + ".bin";
         std::string ask_bar_file = output_file_path_base + "ask_bars_L" + std::to_string(level + 1) + "." + symbol + ".bin";
 
-        // Process and store bid bars
         create_and_store_bars(timestamps, bid_prices[level], bid_bar_file, last_bid_timestamps[level]);
-
-        // Process and store ask bars
         create_and_store_bars(timestamps, ask_prices[level], ask_bar_file, last_ask_timestamps[level]);
+    };
+
+    std::vector<std::thread> threads;
+    for (int level = 0; level < 3; ++level) {
+        threads.emplace_back(process_level, level);
+    }
+
+    for (auto &thread : threads) {
+        thread.join();
     }
 }
 
