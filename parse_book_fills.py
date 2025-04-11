@@ -37,27 +37,19 @@ def read_header(file):
 
     return number_of_fills  
 
-def read_data(input_file, number_of_fills, bid_output_file, ask_output_file):
-    """Reads data, prints top bids/asks, and stores prices for plotting."""
+def read_data(input_file, number_of_fills, output_file):
+    """Reads data and stores prices for plotting."""
     print("\nProcessing Book Fill Snapshots...")
     
     timestamps = []
-    bid_prices = []
-    ask_prices = []
+    prices = []
 
     # Bar tracking variables for bids
-    bid_current_bar_time = None
-    bid_high = float('-inf')
-    bid_low = float('inf')
-    bid_open = bid_close = None
-    bid_total_volume = 0
-
-    # Bar tracking variables for asks
-    ask_current_bar_time = None
-    ask_high = float('-inf')
-    ask_low = float('inf')
-    ask_open = ask_close = None
-    ask_total_volume = 0
+    current_bar_time = None
+    high = float('-inf')
+    low = float('inf')
+    open = close = None
+    total_volume = 0
 
     for i in range(number_of_fills):
         data = input_file.read(DATA_SIZE)
@@ -69,10 +61,8 @@ def read_data(input_file, number_of_fills, bid_output_file, ask_output_file):
 
         # Extract relevant fields
         raw_timestamp = unpacked_data[0]  # ts (uint64_t)
-        resting_order_id = unpacked_data[2]  # resting_order_id (uint64_t)
         trade_price = unpacked_data[4]  # trade_price (int64_t)
         trade_qty = unpacked_data[5]  # trade_qty (uint32_t)
-        resting_side_is_bid = unpacked_data[9]  # resting_side_is_bid (bool)
 
         # Convert Timestamp from Nanoseconds to Seconds
         timestamp = raw_timestamp / 1e9
@@ -84,52 +74,30 @@ def read_data(input_file, number_of_fills, bid_output_file, ask_output_file):
 
         trade_price = trade_price / 1e9
 
-        if resting_side_is_bid:
-            if bid_current_bar_time and bar_time != bid_current_bar_time:
-                write_bar(bid_output_file, bid_current_bar_time, bid_high, bid_low, bid_open, bid_close, bid_total_volume)
+        if current_bar_time and bar_time != current_bar_time:
+            write_bar(output_file, current_bar_time, high, low, open, close, total_volume)
 
-            bid_current_bar_time = bar_time
-            
-            if bid_open is None:
-                bid_open = trade_price
+        current_bar_time = bar_time
+        
+        if open is None:
+            open = trade_price
 
-            bid_close = trade_price
+        close = trade_price
 
-            bid_high = max(bid_high, trade_price)
-            bid_low = min(bid_low, trade_price)
+        high = max(high, trade_price)
+        low = min(low, trade_price)
 
-            bid_total_volume += trade_qty
+        total_volume += trade_qty
 
-            bid_prices.append(trade_price)
-            ask_prices.append(None)
-        else:
-            if ask_current_bar_time and bar_time != ask_current_bar_time:
-                write_bar(ask_output_file, ask_current_bar_time, ask_high, ask_low, ask_open, ask_close, ask_total_volume)
-
-            ask_current_bar_time = bar_time
-
-            if ask_open is None:
-                ask_open = trade_price
-
-            ask_close = trade_price
-
-            ask_high = max(ask_high, trade_price)
-            ask_low = min(ask_low, trade_price)
-
-            ask_total_volume += trade_qty
-
-            ask_prices.append(trade_price)
-            bid_prices.append(None)
+        prices.append(trade_price)
 
     # Write the last bid and ask bars after loop ends
-    if bid_current_bar_time:
-        write_bar(bid_output_file, bid_current_bar_time, bid_high, bid_low, bid_open, bid_close, bid_total_volume)
-    if ask_current_bar_time:
-        write_bar(ask_output_file, ask_current_bar_time, ask_high, ask_low, ask_open, ask_close, ask_total_volume)
+    if current_bar_time:
+        write_bar(output_file, current_bar_time, high, low, open, close, total_volume)
 
     # Aggregate data and plot graphs
-    aggregated_data = aggregate_prices(timestamps, bid_prices, ask_prices)
-    plot_aggregated_bid_ask_prices(aggregated_data)
+    aggregated_data = aggregate_prices(timestamps, prices)
+    plot_aggregated_prices(aggregated_data)
 
 def write_bar(output_file, bar_time, high, low, open, close, volume):
     """Writes a bar to the binary file."""
@@ -137,26 +105,23 @@ def write_bar(output_file, bar_time, high, low, open, close, volume):
     bar_data = struct.pack(BAR_FORMAT, timestamp, high, low, open, close, volume)
     output_file.write(bar_data)
 
-def aggregate_prices(timestamps, bid_prices, ask_prices):
+def aggregate_prices(timestamps, prices):
     """Aggregates bid and ask prices into 1-second, 1-minute, and 1-hour bins."""
     def aggregate(interval):
         bins = {}
-        for t, bid, ask in zip(timestamps, bid_prices, ask_prices):
+        for t, price in zip(timestamps, prices):
             key = t.replace(second=0, microsecond=0) if interval >= 60 else t.replace(microsecond=0)
-            key = key.replace(minute=0) if interval >= 3600 else key  # Round to hour if needed
+            key = key.replace(minute=0) if interval >= 3600 else key
             
             if key not in bins:
-                bins[key] = {"bids": [], "asks": []}
-            if bid is not None:
-                bins[key]["bids"].append(bid)
-            if ask is not None:
-                bins[key]["asks"].append(ask)
+                bins[key] = []
+            if price is not None:
+                bins[key].append(price)
         
         aggregated_timestamps = sorted(bins.keys())
-        aggregated_bids = [np.mean(bins[t]["bids"]) if bins[t]["bids"] else None for t in aggregated_timestamps]
-        aggregated_asks = [np.mean(bins[t]["asks"]) if bins[t]["asks"] else None for t in aggregated_timestamps]
+        aggregated_prices = [np.mean(bins[t]) if bins[t] else None for t in aggregated_timestamps]
 
-        return aggregated_timestamps, aggregated_bids, aggregated_asks
+        return aggregated_timestamps, aggregated_prices
 
     return {
         "1-second": aggregate(1),
@@ -164,25 +129,21 @@ def aggregate_prices(timestamps, bid_prices, ask_prices):
         "1-hour": aggregate(3600)
     }
 
-def plot_aggregated_bid_ask_prices(aggregated_data):
+def plot_aggregated_prices(aggregated_data):
     """Plots the bid and ask prices at different time intervals with ET timestamps."""
     intervals = ["1-second", "1-minute", "1-hour"]
     
     for interval in intervals:
-        timestamps, bid_prices, ask_prices = aggregated_data[interval]
+        timestamps, prices = aggregated_data[interval]
 
         plt.figure(figsize=(10, 5))
         
         # Filter out None values
-        bid_times = [t for t, p in zip(timestamps, bid_prices) if p is not None]
-        bid_values = [p for p in bid_prices if p is not None]
-        
-        ask_times = [t for t, p in zip(timestamps, ask_prices) if p is not None]
-        ask_values = [p for p in ask_prices if p is not None]
+        valid_times = [t for t, p in zip(timestamps, prices) if p is not None]
+        valid_prices = [p for p in prices if p is not None]
 
         # Plot bids and asks as lines
-        plt.plot(bid_times, bid_values, label="Bid Price", color='blue', linestyle='-')
-        plt.plot(ask_times, ask_values, label="Ask Price", color='red', linestyle='-')
+        plt.plot(valid_times, valid_prices, label="Price", color='blue', linestyle='-')
 
         # Format x-axis labels
         plt.xticks(rotation=45, ha="right", fontsize=8)
@@ -203,22 +164,16 @@ def process_file():
     symbol = input("Enter symbol: ")
 
     input_file_path = f"/home/vir/{date}/{feed.lower()}/books/{feed.upper()}.book_fills.{symbol.upper()}.bin"
-    output_dir = f"/home/vir/{date}/{feed.lower()}/bars/"
-    bid_output_file_path = f"{output_dir}{feed.upper()}.trade_bid_bars.{symbol.upper()}.bin"
-    ask_output_file_path = f"{output_dir}{feed.upper()}.trade_ask_bars.{symbol.upper()}.bin"
-
-    os.makedirs(output_dir, exist_ok=True)
+    output_file_path = f"/home/vir/{date}/{feed.lower()}/bars/{feed.upper()}.fills_bars.{symbol.upper()}.bin"
 
     try:
-        with open(input_file_path, "rb") as input_file, open(bid_output_file_path, "wb") as bid_output_file, open(ask_output_file_path, "wb") as ask_output_file:
-            print(f"\nSaving bid bars to {bid_output_file_path} (Overwriting if exists)...")
-            print(f"Saving ask bars to {ask_output_file_path} (Overwriting if exists)...")
+        with open(input_file_path, "rb") as input_file, open(output_file_path, "wb") as output_file:
+            print(f"\nSaving bars to {output_file_path} (Overwriting if exists)...")
             
             number_of_fills = read_header(input_file)
             if number_of_fills:
-                read_data(input_file, number_of_fills, bid_output_file, ask_output_file)
-                print(f"Bid bars saved to {bid_output_file_path}")
-                print(f"Ask bars saved to {ask_output_file_path}")
+                read_data(input_file, number_of_fills, output_file)
+                print(f"Bars saved to {output_file_path}")
 
     except FileNotFoundError:
         print("Error: File not found.")

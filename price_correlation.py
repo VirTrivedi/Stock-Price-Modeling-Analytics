@@ -100,8 +100,7 @@ if __name__ == "__main__":
 
     base_path = f"/home/vir/{date}/{feed.lower()}/bars/{feed.upper()}"
     # Input paths for the files
-    trade_bid_file_stock1 = f"{base_path}.trade_bid_bars.{symbol1.upper()}.bin"
-    trade_ask_file_stock1 = f"{base_path}.trade_ask_bars.{symbol1.upper()}.bin"
+    fills_file_stock1 = f"{base_path}.fills_bars.{symbol1.upper()}.bin"
     L1_bid_file_stock1 = f"{base_path}.bid_bars_L1.{symbol1.upper()}.bin"
     L1_ask_file_stock1 = f"{base_path}.ask_bars_L1.{symbol1.upper()}.bin"
     L2_bid_file_stock1 = f"{base_path}.bid_bars_L2.{symbol1.upper()}.bin"
@@ -109,8 +108,7 @@ if __name__ == "__main__":
     L3_bid_file_stock1 = f"{base_path}.bid_bars_L3.{symbol1.upper()}.bin"
     L3_ask_file_stock1 = f"{base_path}.ask_bars_L3.{symbol1.upper()}.bin"
 
-    trade_bid_file_stock2 = f"{base_path}.trade_bid_bars.{symbol2.upper()}.bin"
-    trade_ask_file_stock2 = f"{base_path}.trade_ask_bars.{symbol2.upper()}.bin"
+    fills_file_stock2 = f"{base_path}.fills_bars.{symbol2.upper()}.bin"
     L1_bid_file_stock2 = f"{base_path}.bid_bars_L1.{symbol2.upper()}.bin"
     L1_ask_file_stock2 = f"{base_path}.ask_bars_L1.{symbol2.upper()}.bin"
     L2_bid_file_stock2 = f"{base_path}.bid_bars_L2.{symbol2.upper()}.bin"
@@ -119,8 +117,7 @@ if __name__ == "__main__":
     L3_ask_file_stock2 = f"{base_path}.ask_bars_L3.{symbol2.upper()}.bin"
 
     # Calculate correlations
-    correlation_trade_bid = calculate_correlation(trade_bid_file_stock1, trade_bid_file_stock2, True)
-    correlation_trade_ask = calculate_correlation(trade_ask_file_stock1, trade_ask_file_stock2, True)
+    correlation_fills = calculate_correlation(fills_file_stock1, fills_file_stock2, True)
     correlation_L1_bid = calculate_correlation(L1_bid_file_stock1, L1_bid_file_stock2, False)
     correlation_L1_ask = calculate_correlation(L1_ask_file_stock1, L1_ask_file_stock2, False)
     correlation_L2_bid = calculate_correlation(L2_bid_file_stock1, L2_bid_file_stock2, False)
@@ -130,19 +127,17 @@ if __name__ == "__main__":
 
     # Calculate weighted correlation
     correlations = [
-        correlation_trade_bid, correlation_trade_ask,
+        correlation_fills,
         correlation_L1_bid, correlation_L1_ask,
         correlation_L2_bid, correlation_L2_ask,
         correlation_L3_bid, correlation_L3_ask
     ]
-    weights = [0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125] # Equal weights for each correlation
+    weights = [0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125,] # Equal weights for each correlation
     overall_correlation = calculate_weighted_correlation(correlations, weights)
 
     # Display results
-    if correlation_trade_bid is not None:
-        print(f"Correlation between trade bid closing prices of {symbol1.upper()} and {symbol2.upper()}: {correlation_trade_bid:.4f}")
-    if correlation_trade_ask is not None:
-        print(f"Correlation between trade ask closing prices of {symbol1.upper()} and {symbol2.upper()}: {correlation_trade_ask:.4f}")
+    if correlation_fills is not None:
+        print(f"Correlation between fills closing prices of {symbol1.upper()} and {symbol2.upper()}: {correlation_fills:.4f}")
     if correlation_L1_bid is not None:
         print(f"Correlation between L1 bid closing prices of {symbol1.upper()} and {symbol2.upper()}: {correlation_L1_bid:.4f}")
     if correlation_L1_ask is not None:
