@@ -38,7 +38,7 @@ def read_header(file):
 
 def read_data(input_file, number_of_tops):
     """Reads book top data, extracting timestamps, bid/ask prices for all three levels."""
-    print("\nProcessing Book Fill Snapshots...")
+    print("\nProcessing Book Tops Snapshots...")
 
     timestamps = []
     bid_prices, ask_prices = [[], [], []], [[], [], []]  # Three levels
@@ -227,6 +227,7 @@ def process_file():
     date = input("Enter file date (yearMonthDay): ")
     feed = input("Enter file feed: ")
     symbol = input("Enter symbol: ")
+    plot = input("Do you want to plot the data? (yes/no): ").strip().lower() == "yes"
 
     input_file_path = f"/home/vir/{date}/{feed.lower()}/books/{feed.upper()}.book_tops.{symbol.upper()}.bin"
     output_file_path_base = f"/home/vir/{date}/{feed.lower()}/bars/{feed.upper()}."
@@ -237,9 +238,34 @@ def process_file():
             if number_of_tops:
                 timestamps, bid_prices, ask_prices = read_data(input_file, number_of_tops)
                 
-                # Aggregate and plot the data
-                aggregated_data = aggregate_prices(timestamps, bid_prices, ask_prices)
-                plot_aggregated_bid_ask_prices(aggregated_data)
+                if plot:
+                    # Aggregate and plot the data
+                    aggregated_data = aggregate_prices(timestamps, bid_prices, ask_prices)
+                    plot_aggregated_bid_ask_prices(aggregated_data)
+                
+                process_and_store_bars(timestamps, bid_prices, ask_prices, output_file_path_base, symbol)
+
+    except FileNotFoundError:
+        print("Error: File not found.")
+    except Exception as e:
+        print("Error reading file: {}".format(e))
+
+def process_file(date, feed, symbol, plot=False):
+    """Handles file input and calls functions to read the header and data."""
+    input_file_path = f"/home/vir/{date}/{feed.lower()}/books/{feed.upper()}.book_tops.{symbol.upper()}.bin"
+    output_file_path_base = f"/home/vir/{date}/{feed.lower()}/bars/{feed.upper()}."
+    
+    try:
+        with open(input_file_path, "rb") as input_file:
+            number_of_tops = read_header(input_file)
+            if number_of_tops:
+                timestamps, bid_prices, ask_prices = read_data(input_file, number_of_tops)
+                
+                if plot:
+                    # Aggregate and plot the data
+                    aggregated_data = aggregate_prices(timestamps, bid_prices, ask_prices)
+                    plot_aggregated_bid_ask_prices(aggregated_data)
+                    
                 process_and_store_bars(timestamps, bid_prices, ask_prices, output_file_path_base, symbol)
 
     except FileNotFoundError:

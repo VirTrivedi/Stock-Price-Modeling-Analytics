@@ -37,7 +37,7 @@ def read_header(file):
 
     return number_of_fills  
 
-def read_data(input_file, number_of_fills, output_file):
+def read_data(input_file, number_of_fills, output_file, plot):
     """Reads data and stores prices for plotting."""
     print("\nProcessing Book Fill Snapshots...")
     
@@ -95,9 +95,10 @@ def read_data(input_file, number_of_fills, output_file):
     if current_bar_time:
         write_bar(output_file, current_bar_time, high, low, open, close, total_volume)
 
-    # Aggregate data and plot graphs
-    aggregated_data = aggregate_prices(timestamps, prices)
-    plot_aggregated_prices(aggregated_data)
+    if plot:
+        # Aggregate data and plot graphs
+        aggregated_data = aggregate_prices(timestamps, prices)
+        plot_aggregated_prices(aggregated_data)
 
 def write_bar(output_file, bar_time, high, low, open, close, volume):
     """Writes a bar to the binary file."""
@@ -162,6 +163,7 @@ def process_file():
     date = input("Enter file date (yearMonthDay): ")
     feed = input("Enter file feed: ")
     symbol = input("Enter symbol: ")
+    plot = input("Do you want to plot the data? (yes/no): ").strip().lower() == "yes"
 
     input_file_path = f"/home/vir/{date}/{feed.lower()}/books/{feed.upper()}.book_fills.{symbol.upper()}.bin"
     output_file_path = f"/home/vir/{date}/{feed.lower()}/bars/{feed.upper()}.fills_bars.{symbol.upper()}.bin"
@@ -172,7 +174,26 @@ def process_file():
             
             number_of_fills = read_header(input_file)
             if number_of_fills:
-                read_data(input_file, number_of_fills, output_file)
+                read_data(input_file, number_of_fills, output_file, plot)
+                print(f"Bars saved to {output_file_path}")
+
+    except FileNotFoundError:
+        print("Error: File not found.")
+    except Exception as e:
+        print("Error reading file: {}".format(e))
+
+def process_file(date, feed, symbol, plot=False):
+    """Handles file input and calls functions to read the header and data."""
+    input_file_path = f"/home/vir/{date}/{feed.lower()}/books/{feed.upper()}.book_fills.{symbol.upper()}.bin"
+    output_file_path = f"/home/vir/{date}/{feed.lower()}/bars/{feed.upper()}.fills_bars.{symbol.upper()}.bin"
+
+    try:
+        with open(input_file_path, "rb") as input_file, open(output_file_path, "wb") as output_file:
+            print(f"\nSaving bars to {output_file_path} (Overwriting if exists)...")
+            
+            number_of_fills = read_header(input_file)
+            if number_of_fills:
+                read_data(input_file, number_of_fills, output_file, plot)
                 print(f"Bars saved to {output_file_path}")
 
     except FileNotFoundError:
