@@ -46,15 +46,20 @@ def read_tops_bar_file(file_path):
 def trim_to_same_length(list1, list2):
     """Trims two lists to the same length by evenly removing entries from the longer list."""
     len1, len2 = len(list1), len(list2)
+
+    # If either list is empty, return empty lists to signal bad data
+    if len1 == 0 or len2 == 0:
+        return [], []
+
     if len1 > len2:
-        step = len1 // len2
+        step = max(1, len1 // len2)
         list1 = [list1[i] for i in range(0, len1, step)][:len2]
     elif len2 > len1:
-        step = len2 // len1
+        step = max(1, len2 // len1)
         list2 = [list2[i] for i in range(0, len2, step)][:len1]
     return list1, list2
 
-def calculate_correlation(file1, file2, fills_flag):
+def calculate_correlation(file1, file2, fills_flag, min_length=10):
     """Calculates the correlation between closing prices of two files."""
     
     # Checks if files are fills or tops and reads accordingly
@@ -65,13 +70,18 @@ def calculate_correlation(file1, file2, fills_flag):
         prices1 = read_tops_bar_file(file1)
         prices2 = read_tops_bar_file(file2)
 
+    # Skip if either list is empty
+    if not prices1 or not prices2:
+        print(f"Skipping: Empty data in files:\n  {file1}\n  {file2}")
+        return None
+
     # Trim lists to the same length
     prices1, prices2 = trim_to_same_length(prices1, prices2)
 
-    if len(prices1) == 0 or len(prices2) == 0:
-        print("Error: One or both files have no data.")
+    if len(prices1) < min_length or len(prices2) < min_length:
+        print(f"Skipping after trimming (too little data):\n  {file1} ({len(prices1)} entries)\n  {file2} ({len(prices2)} entries)")
         return None
-
+    
     # Calculate correlation
     correlation = np.corrcoef(prices1, prices2)[0, 1]
     return correlation
@@ -132,7 +142,7 @@ if __name__ == "__main__":
         correlation_L2_bid, correlation_L2_ask,
         correlation_L3_bid, correlation_L3_ask
     ]
-    weights = [0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125,] # Equal weights for each correlation
+    weights = [0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125] # Equal weights for each correlation
     overall_correlation = calculate_weighted_correlation(correlations, weights)
 
     # Display results
