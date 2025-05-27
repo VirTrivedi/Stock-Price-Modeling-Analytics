@@ -229,7 +229,7 @@ std::optional<double> calculate_weighted_correlation(
     return weighted_sum / total_weight;
 }
 
-
+/*
 int main() {
     std::string date, feed, symbol1_str, symbol2_str;
 
@@ -301,3 +301,4 @@ int main() {
 
     return 0;
 }
+*/
