@@ -164,22 +164,22 @@ std::string to_upper(std::string s) {
 }
 
 
-int main() {
-    std::string date, feed, symbol;
+int main(int argc, char *argv[]) {
+    if (argc != 4) {
+        std::cerr << "Usage: " << argv[0] << " <date> <feed> <symbol>" << std::endl;
+        return 1;
+    }
 
-    std::cout << "Enter file date (yearMonthDay): ";
-    std::cin >> date;
-    std::cout << "Enter file feed: ";
-    std::cin >> feed;
-    std::cout << "Enter symbol: ";
-    std::cin >> symbol;
+    std::string date = argv[1];
+    std::string feed = argv[2];
+    std::string symbol = argv[3];
+
+    // Convert symbol to uppercase
+    std::transform(symbol.begin(), symbol.end(), symbol.begin(), ::toupper);
 
     // Construct file paths (adjust base path as needed)
     std::string base_path_input = "/home/vir/" + date + "/" + to_lower(feed) + "/books/" + to_upper(feed) + ".book_fills." + to_upper(symbol) + ".bin";
     std::string base_path_output = "/home/vir/" + date + "/" + to_lower(feed) + "/bars/" + to_upper(feed) + ".fills_bars." + to_upper(symbol) + ".bin";
-
-    std::cout << "Input file: " << base_path_input << std::endl;
-    std::cout << "Output file: " << base_path_output << std::endl;
     
     std::ifstream input_file(base_path_input, std::ios::binary);
     if (!input_file.is_open()) {
