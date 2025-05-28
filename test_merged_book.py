@@ -1,6 +1,7 @@
 import os
 import struct
 import sys
+import argparse
 
 # --- Constants ---
 HEADER_SIZE = 24
@@ -129,45 +130,29 @@ def test_merged_file(merged_filepath, expected_record_size):
     return True
 
 
-def main_test_suite():
+def main():
     """
-    Main function to run the test suite.
+    Main function to test a single merged file based on command-line arguments.
     """
-    date = input("Enter the date of the merged files (e.g., YYYYMMDD): ").strip()
-    symbol = input("Enter the stock symbol of the merged files (e.g., AAPL): ").strip().upper()
+    parser = argparse.ArgumentParser(description="Test a single merged book .bin file.")
+    parser.add_argument("--filepath", required=True, help="Full path to the merged .bin file to test.")
+    parser.add_argument("--type", required=True, choices=["fills", "tops"], help="Type of the merged file (fills or tops).")
+    
+    args = parser.parse_args()
 
-    base_date_path = f"/home/vir/{date}" 
-    merged_books_folder = os.path.join(base_date_path, "mergedbooks")
-
-    if not os.path.isdir(merged_books_folder):
-        print(f"FAIL: Merged books folder not found: {merged_books_folder}")
-        print("Please ensure merged_book.py has been run successfully for the given date and symbol.")
-        sys.exit(1)
-
-    all_tests_passed_flag = True
-
-    # Test merged fills file
-    merged_fills_filename = f"merged_fills.{symbol}.bin"
-    merged_fills_filepath = os.path.join(merged_books_folder, merged_fills_filename)
-    if not test_merged_file(merged_fills_filepath, FILLS_RECORD_SIZE):
-        all_tests_passed_flag = False
-
-    # Test merged tops file
-    merged_tops_filename = f"merged_tops.{symbol}.bin"
-    merged_tops_filepath = os.path.join(merged_books_folder, merged_tops_filename)
-    if not test_merged_file(merged_tops_filepath, TOPS_RECORD_SIZE):
-        all_tests_passed_flag = False
-
-    if all_tests_passed_flag:
-        print("\n==========================")
-        print("All tests passed successfully!")
-        print("==========================")
+    expected_record_size = 0
+    if args.type == "fills":
+        expected_record_size = FILLS_RECORD_SIZE
+    elif args.type == "tops":
+        expected_record_size = TOPS_RECORD_SIZE
     else:
-        print("\n!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        print("Some tests FAILED.")
-        print("!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print(f"Error: Unknown file type '{args.type}'. Cannot determine record size.")
         sys.exit(1)
 
+    if test_merged_file(args.filepath, expected_record_size):
+        sys.exit(0)
+    else:
+        sys.exit(1)
 
 if __name__ == "__main__":
-    main_test_suite()
+    main()

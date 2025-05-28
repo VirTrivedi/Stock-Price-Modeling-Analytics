@@ -2,6 +2,9 @@ import os
 import struct
 import heapq
 import re
+import sys
+import random
+import subprocess
 
 # --- Constants ---
 HEADER_SIZE = 24
@@ -45,12 +48,11 @@ def read_next_record_with_timestamp(file_handle, record_size):
     timestamp = struct.unpack_from('<Q', record_data_bytes, 0)[0]
     return timestamp, record_data_bytes
 
-
 def merge_files_for_symbol_by_timestamp(base_date_path, venue_folders, symbol, file_type_suffix, merged_output_folder):
     """
     Merges specific types of book files (fills or tops) for a given symbol across venues,
     ordering records by timestamp.
-    (This function is largely the same as in merged_book.py)
+    Returns the path to the merged file if successful, None otherwise.
     """
     merged_filename_key = file_type_suffix.split('_')[1]
     merged_filename = f"merged_{merged_filename_key}.{symbol}.bin"
@@ -63,7 +65,7 @@ def merge_files_for_symbol_by_timestamp(base_date_path, venue_folders, symbol, f
         record_size = TOPS_RECORD_SIZE
     else:
         print(f"Error: Unknown file_type_suffix for merging: {file_type_suffix}")
-        return
+        return None
 
     source_files_to_process = []
     for venue in venue_folders:
@@ -76,7 +78,7 @@ def merge_files_for_symbol_by_timestamp(base_date_path, venue_folders, symbol, f
             source_files_to_process.append(source_filepath)
 
     if not source_files_to_process:
-        return
+        return None
 
     file_handles = []
     first_valid_header_data = None
@@ -107,7 +109,10 @@ def merge_files_for_symbol_by_timestamp(base_date_path, venue_folders, symbol, f
                 continue
         
         if not min_heap or first_valid_header_data is None:
-            return 
+            for fh_cleanup in file_handles:
+                if not fh_cleanup.closed:
+                    fh_cleanup.close()
+            return None
 
         with open(merged_filepath, 'wb') as merged_file_handle:
             merged_file_handle.write(b'\0' * HEADER_SIZE)
@@ -130,20 +135,23 @@ def merge_files_for_symbol_by_timestamp(base_date_path, venue_folders, symbol, f
 
         if total_records_merged > 0:
             print(f"  Successfully merged {file_type_suffix} for {symbol} into: {merged_filepath} ({total_records_merged} records)")
+            return merged_filepath
+        else:
+            if os.path.exists(merged_filepath):
+                try:
+                    if os.path.getsize(merged_filepath) == HEADER_SIZE and open(merged_filepath, 'rb').read() == (b'\0' * HEADER_SIZE):
+                        os.remove(merged_filepath)
+                except OSError:
+                    pass
+            return None
 
     except IOError as e:
         print(f"  An IO error occurred during merging {file_type_suffix} for {symbol}: {e}")
+        return None
     finally:
         for fh in file_handles:
             if not fh.closed:
                 fh.close()
-    
-    if total_records_merged == 0 and os.path.exists(merged_filepath) and os.path.getsize(merged_filepath) <= HEADER_SIZE :
-         if os.path.getsize(merged_filepath) == HEADER_SIZE and open(merged_filepath, 'rb').read() == (b'\0' * HEADER_SIZE):
-            try:
-                os.remove(merged_filepath)
-            except OSError as e_rem:
-                print(f"  Error removing empty merged file {merged_filepath}: {e_rem}")
 
 def extract_symbols_from_all_venues(base_date_path, venue_folders):
     """
@@ -168,12 +176,14 @@ def extract_symbols_from_all_venues(base_date_path, venue_folders):
 
 def main():
     """
-    Main function to drive the batch merging process for all symbols for a given date.
+    Main function to drive the batch merging process and subsequent random testing
+    by calling an external test script.
     """
     date = get_user_input_date()
 
     base_date_path = f"/home/vir/{date}"
     merged_output_folder = os.path.join(base_date_path, "mergedbooks")
+    test_script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_merged_book.py")
 
     if not os.path.isdir(base_date_path):
         print(f"Error: Date directory '{base_date_path}' does not exist.")
@@ -196,19 +206,79 @@ def main():
     if not all_symbols:
         print(f"No symbols found across any venues in '{base_date_path}'.")
         return
-    print(f"Found {len(all_symbols)} unique symbols to process: {', '.join(all_symbols)}")
+    print(f"Found {len(all_symbols)} unique symbols to process.")
+
+    successfully_merged_files_info = []
 
     for i, symbol in enumerate(all_symbols):
         print(f"\n[{i+1}/{len(all_symbols)}] Processing symbol: {symbol}")
         
-        # Merge fills files by timestamp
-        merge_files_for_symbol_by_timestamp(base_date_path, venue_folders, symbol, "book_fills", merged_output_folder)
+        merged_fills_path = merge_files_for_symbol_by_timestamp(base_date_path, venue_folders, symbol, "book_fills", merged_output_folder)
+        if merged_fills_path:
+            successfully_merged_files_info.append({"path": merged_fills_path, "type": "fills"})
 
-        # Merge tops files by timestamp
-        merge_files_for_symbol_by_timestamp(base_date_path, venue_folders, symbol, "book_tops", merged_output_folder)
+        merged_tops_path = merge_files_for_symbol_by_timestamp(base_date_path, venue_folders, symbol, "book_tops", merged_output_folder)
+        if merged_tops_path:
+            successfully_merged_files_info.append({"path": merged_tops_path, "type": "tops"})
 
     print("\nBatch merging script finished.")
 
+    # --- Random Testing Phase ---
+    if not successfully_merged_files_info:
+        print("\nNo merged files were created to test.")
+        return
+
+    if not os.path.exists(test_script_path):
+        print(f"\nError: Test script not found at {test_script_path}. Skipping testing phase.")
+        return
+
+    num_files_to_test = max(1, int(len(successfully_merged_files_info) * 0.05))
+    if num_files_to_test > len(successfully_merged_files_info):
+        num_files_to_test = len(successfully_merged_files_info)
+        
+    print(f"\n--- Starting Random Testing Phase (calling {test_script_path}) ---")
+    print(f"Will test {num_files_to_test} out of {len(successfully_merged_files_info)} successfully merged files.")
+
+    files_to_test_sample = random.sample(successfully_merged_files_info, num_files_to_test)
+    
+    overall_random_tests_passed = True
+    for file_info in files_to_test_sample:
+        filepath_to_test = file_info["path"]
+        file_type_to_test = file_info["type"]
+        
+        print(f"\nCalling test script for: {filepath_to_test} (type: {file_type_to_test})")
+        command = [
+            sys.executable,
+            test_script_path,
+            "--filepath", filepath_to_test,
+            "--type", file_type_to_test
+        ]
+        
+        try:
+            result = subprocess.run(command, check=False, capture_output=True, text=True)
+            print(f"--- Test Script Output for {os.path.basename(filepath_to_test)} ---")
+            if result.stdout:
+                print("STDOUT:\n" + result.stdout.strip())
+            if result.stderr:
+                print("STDERR:\n" + result.stderr.strip())
+            
+            if result.returncode == 0:
+                print(f"PASS: Test script exited successfully for {filepath_to_test}.")
+            else:
+                print(f"FAIL: Test script exited with error code {result.returncode} for {filepath_to_test}.")
+                overall_random_tests_passed = False
+        except Exception as e:
+            print(f"FAIL: Error calling test script for {filepath_to_test}: {e}")
+            overall_random_tests_passed = False
+
+    if overall_random_tests_passed:
+        print("\n======================================================")
+        print("All randomly selected external tests passed successfully!")
+        print("======================================================")
+    else:
+        print("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print("Some randomly selected external tests FAILED.")
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 
 if __name__ == "__main__":
     main()
