@@ -159,7 +159,7 @@ def extract_symbols_from_all_venues(base_date_path, venue_folders):
     across all specified venue folders.
     """
     symbols_set = set()
-    symbol_pattern = re.compile(r'^[A-Z0-9_-]+\.(?:book_fills|book_tops)\.([A-Z0-9_]+)\.bin$', re.IGNORECASE)
+    symbol_pattern = re.compile(r'^[A-Z0-9_-]+\.(?:book_fills|book_tops)\.([A-Z0-9_^+=-]+)\.bin$', re.IGNORECASE)
 
     for venue in venue_folders:
         books_folder_path = os.path.join(base_date_path, venue, "books")
