@@ -91,26 +91,35 @@ def merge_files_for_symbol_by_timestamp(base_date_path, venue_folders, symbol, f
                 fh = open(source_filepath, 'rb')
                 header_bytes = fh.read(HEADER_SIZE) 
                 if len(header_bytes) < HEADER_SIZE:
+                    print(f"  Warning: Could not read full header from {source_filepath}. Skipping.")
                     fh.close()
                     continue
                 
+                current_feed_id = struct.unpack_from('<Q', header_bytes, 0)[0] 
+
                 if first_valid_header_data is None:
-                    first_valid_header_data = header_bytes 
+                    first_valid_header_data = header_bytes
 
                 file_handles.append(fh) 
                 
                 next_item = read_next_record_with_timestamp(fh, record_size)
                 if next_item:
                     timestamp, record_bytes = next_item
-                    heapq.heappush(min_heap, (timestamp, record_bytes, fh)) 
+                    heapq.heappush(min_heap, (timestamp, record_bytes, fh, current_feed_id)) 
             except IOError as e:
+                print(f"  IOError opening or reading initial record from {source_filepath}: {e}")
+                if 'fh' in locals() and fh and not fh.closed:
+                    fh.close()
+                continue
+            except struct.error as e:
+                print(f"  Struct error processing header for {source_filepath}: {e}")
                 if 'fh' in locals() and fh and not fh.closed:
                     fh.close()
                 continue
         
         if not min_heap or first_valid_header_data is None:
             for fh_cleanup in file_handles:
-                if not fh_cleanup.closed:
+                if fh_cleanup and not fh_cleanup.closed:
                     fh_cleanup.close()
             return None
 
@@ -118,20 +127,23 @@ def merge_files_for_symbol_by_timestamp(base_date_path, venue_folders, symbol, f
             merged_file_handle.write(b'\0' * HEADER_SIZE)
 
             while min_heap:
-                timestamp, record_bytes, source_fh = heapq.heappop(min_heap)
+                timestamp, record_bytes, source_fh, item_feed_id = heapq.heappop(min_heap)
+                
+                merged_file_handle.write(struct.pack('<Q', item_feed_id))
                 merged_file_handle.write(record_bytes)
                 total_records_merged += 1
 
                 next_item = read_next_record_with_timestamp(source_fh, record_size)
                 if next_item:
                     new_timestamp, new_record_bytes = next_item
-                    heapq.heappush(min_heap, (new_timestamp, new_record_bytes, source_fh))
+                    heapq.heappush(min_heap, (new_timestamp, new_record_bytes, source_fh, item_feed_id)) 
             
-            merged_file_handle.seek(0)
-            header_values = list(struct.unpack(HEADER_FULL_STRUCT_FORMAT, first_valid_header_data))
-            header_values[2] = total_records_merged 
-            updated_header_bytes = struct.pack(HEADER_FULL_STRUCT_FORMAT, *header_values)
-            merged_file_handle.write(updated_header_bytes)
+            if total_records_merged > 0 and first_valid_header_data:
+                merged_file_handle.seek(0)
+                header_values = list(struct.unpack(HEADER_FULL_STRUCT_FORMAT, first_valid_header_data))
+                header_values[2] = total_records_merged
+                updated_header_bytes = struct.pack(HEADER_FULL_STRUCT_FORMAT, *header_values)
+                merged_file_handle.write(updated_header_bytes)
 
         if total_records_merged > 0:
             print(f"  Successfully merged {file_type_suffix} for {symbol} into: {merged_filepath} ({total_records_merged} records)")

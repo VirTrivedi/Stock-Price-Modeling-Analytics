@@ -7,10 +7,17 @@ import argparse
 HEADER_SIZE = 24
 HEADER_FULL_STRUCT_FORMAT = '<QIIQ'
 
+#feed_id prefix
+FEED_ID_SIZE = 8
+FEED_ID_STRUCT_FORMAT = '<Q'
+
 # Fills Record
-FILLS_RECORD_SIZE = struct.calcsize('<QQQ?qIQIIQ?qIqII')
+FILLS_RECORD_STRUCT_FORMAT = '<QQQ?qIQIIQ?qIqII'
+FILLS_RECORD_SIZE = struct.calcsize(FILLS_RECORD_STRUCT_FORMAT)
+
 # Tops Record
-TOPS_RECORD_SIZE = struct.calcsize('<QQqqq qqqIII III')
+TOPS_RECORD_STRUCT_FORMAT = '<QQqqq qqqIII III'
+TOPS_RECORD_SIZE = struct.calcsize(TOPS_RECORD_STRUCT_FORMAT)
 
 TIMESTAMP_OFFSET = 0
 TIMESTAMP_STRUCT_FORMAT = '<Q'
@@ -40,7 +47,7 @@ def read_header_from_file(filepath):
         return None, 0
 
 
-def read_all_records_and_check_timestamps(filepath, record_size):
+def read_all_records_and_check_timestamps(filepath, data_record_size):
     """
     Reads all data records from the file, skipping the header.
     Returns a list of timestamps and the total count of records read.
@@ -56,18 +63,26 @@ def read_all_records_and_check_timestamps(filepath, record_size):
         with open(filepath, 'rb') as f:
             f.seek(HEADER_SIZE)
             while True:
-                record_data_bytes = f.read(record_size)
-                if not record_data_bytes:
+                feed_id_bytes = f.read(FEED_ID_SIZE)
+                if not feed_id_bytes:
                     break
-                if len(record_data_bytes) < record_size:
-                    print(f"Warning: Incomplete record found at end of {filepath} (size {len(record_data_bytes)}/{record_size}). Ignored.")
+                if len(feed_id_bytes) < FEED_ID_SIZE:
+                    print(f"Warning: Incomplete feed_id found at end of {filepath}. Expected {FEED_ID_SIZE}, got {len(feed_id_bytes)}. Ignored.")
                     break
                 
-                current_timestamp = struct.unpack_from(TIMESTAMP_STRUCT_FORMAT, record_data_bytes, TIMESTAMP_OFFSET)[0]
+                payload_bytes = f.read(data_record_size)
+                if not payload_bytes:
+                    print(f"Warning: Missing payload after feed_id at end of {filepath}. Ignored.")
+                    break
+                if len(payload_bytes) < data_record_size:
+                    print(f"Warning: Incomplete data record found at end of {filepath}. Expected {data_record_size}, got {len(payload_bytes)}. Ignored.")
+                    break
+                
+                current_timestamp = struct.unpack_from(TIMESTAMP_STRUCT_FORMAT, payload_bytes, TIMESTAMP_OFFSET)[0]
                 timestamps.append(current_timestamp)
                 actual_record_count += 1
 
-                if current_timestamp < previous_timestamp:
+                if actual_record_count > 1 and current_timestamp < previous_timestamp:
                     is_sorted_correctly = False
                 previous_timestamp = current_timestamp
         return timestamps, actual_record_count, is_sorted_correctly
@@ -75,11 +90,10 @@ def read_all_records_and_check_timestamps(filepath, record_size):
         print(f"Error reading records from {filepath}: {e}")
         return [], 0, False
     except struct.error as e:
-        print(f"Error unpacking record timestamp from {filepath}: {e}")
+        print(f"Error unpacking record data from {filepath}: {e}")
         return [], actual_record_count, False
 
-
-def test_merged_file(merged_filepath, expected_record_size):
+def test_merged_file(merged_filepath, expected_data_record_size):
     """
     Tests a single merged file for header consistency and timestamp order.
     Returns True if all tests pass, False otherwise.
@@ -103,32 +117,40 @@ def test_merged_file(merged_filepath, expected_record_size):
     feed_id, dateint_from_header, _, symbol_idx = header_values
     print(f"  Header Info: Feed ID={feed_id}, DateInt={dateint_from_header}, NumRecsInHeader={num_recs_from_header}, SymbolIdx={symbol_idx}")
 
-    timestamps_list, actual_num_records_in_file, sorted_correctly = read_all_records_and_check_timestamps(merged_filepath, expected_record_size)
+    expected_total_data_payload_size = num_recs_from_header * (FEED_ID_SIZE + expected_data_record_size)
+    expected_total_file_size = HEADER_SIZE + expected_total_data_payload_size
+
+    if file_size != expected_total_file_size:
+        print(f"  Warning: File size ({file_size}) does not match expected size based on header ({expected_total_file_size}). "
+              f"Header count: {num_recs_from_header}, Record entry size: {FEED_ID_SIZE + expected_data_record_size}.")
+
+    timestamps_list, actual_num_records_in_file, sorted_correctly = read_all_records_and_check_timestamps(merged_filepath, expected_data_record_size)
     
     print(f"  Actual records found in data portion: {actual_num_records_in_file}")
+    
+    pass_overall = True
+
     if num_recs_from_header != actual_num_records_in_file:
         print(f"FAIL: Header record count ({num_recs_from_header}) does not match actual records in file ({actual_num_records_in_file}).")
+        pass_overall = False
     else:
         print("  PASS: Header record count matches actual records in file.")
 
     if actual_num_records_in_file == 0:
         if num_recs_from_header == 0:
              print("  INFO: Merged file contains no data records (header indicates 0 records). This is valid.")
-             print(f"--- Test PASSED (for empty file) for {merged_filepath} ---")
-             return True
-
-    if not sorted_correctly:
+    elif not sorted_correctly:
         print(f"FAIL: Records are NOT sorted correctly by timestamp in {merged_filepath}.")
-        return False
+        pass_overall = False
+    else:
+        print("  PASS: Records are sorted correctly by timestamp.")
     
-    print("  PASS: Records are sorted correctly by timestamp.")
-    
-    if num_recs_from_header != actual_num_records_in_file:
+    if pass_overall:
+        print(f"--- Test PASSED for {merged_filepath} ---")
+        return True
+    else:
+        print(f"--- Test FAILED for {merged_filepath} ---")
         return False
-
-    print(f"--- Test PASSED for {merged_filepath} ---")
-    return True
-
 
 def main():
     """
@@ -140,16 +162,16 @@ def main():
     
     args = parser.parse_args()
 
-    expected_record_size = 0
+    expected_data_record_size = 0
     if args.type == "fills":
-        expected_record_size = FILLS_RECORD_SIZE
+        expected_data_record_size = FILLS_RECORD_SIZE
     elif args.type == "tops":
-        expected_record_size = TOPS_RECORD_SIZE
+        expected_data_record_size = TOPS_RECORD_SIZE
     else:
         print(f"Error: Unknown file type '{args.type}'. Cannot determine record size.")
         sys.exit(1)
 
-    if test_merged_file(args.filepath, expected_record_size):
+    if test_merged_file(args.filepath, expected_data_record_size):
         sys.exit(0)
     else:
         sys.exit(1)

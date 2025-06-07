@@ -141,9 +141,13 @@ struct HeapItem {
     uint64_t timestamp;
     std::vector<char> record_data;
     size_t file_index;
+    uint64_t feed_id;
 
     bool operator>(const HeapItem& other) const {
-        return timestamp > other.timestamp;
+        if (timestamp != other.timestamp) {
+            return timestamp > other.timestamp;
+        }
+        return false; 
     }
 };
 
@@ -224,10 +228,9 @@ std::optional<fs::path> merge_files_for_symbol_by_timestamp(
         file_streams.push_back(std::move(ifs));
         size_t current_file_idx = file_streams.size() - 1;
 
-
         auto next_item_opt = read_next_record_with_timestamp_raw(*file_streams.back(), record_size);
         if (next_item_opt) {
-            min_heap.push({next_item_opt->first, next_item_opt->second, current_file_idx});
+            min_heap.push({next_item_opt->first, next_item_opt->second, current_file_idx, current_header.feed_id});
         }
     }
     
@@ -249,13 +252,15 @@ std::optional<fs::path> merge_files_for_symbol_by_timestamp(
         HeapItem current_item = min_heap.top();
         min_heap.pop();
 
+        // Write feed_id first
+        merged_file_handle.write(reinterpret_cast<const char*>(&current_item.feed_id), sizeof(uint64_t));
+        // Then write record data
         merged_file_handle.write(current_item.record_data.data(), current_item.record_data.size());
         total_records_merged++;
 
-        // Read next record from the same source file
         auto next_item_opt = read_next_record_with_timestamp_raw(*file_streams[current_item.file_index], record_size);
         if (next_item_opt) {
-            min_heap.push({next_item_opt->first, next_item_opt->second, current_item.file_index});
+            min_heap.push({next_item_opt->first, next_item_opt->second, current_item.file_index, current_item.feed_id});
         }
     }
 
