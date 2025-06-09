@@ -8,16 +8,28 @@
 #include <future>
 #include <mutex>
 #include <atomic>
+#include <optional>
+#include <deque>
+#include <thread>
 
 const std::string HISTBOOK_EXECUTABLE = "/home/vir/histbook/build/bin/HistBook";
 const std::string PARSE_FILLS_EXECUTABLE = "./parse_book_fills"; 
 const std::string PROCESS_TOPS_EXECUTABLE = "./process_tops";
+const std::string PARSE_MERGED_TOPS_EXECUTABLE = "./parse_merged_tops";
+const unsigned int MAX_CONCURRENT_TASKS = std::max(1u, std::thread::hardware_concurrency());
 namespace fs = std::filesystem;
 
 // Helper function to convert string to lowercase
 std::string to_lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(),
                    [](unsigned char c){ return std::tolower(c); });
+    return s;
+}
+
+// Helper function to convert string to uppercase
+std::string to_upper(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c){ return std::toupper(c); });
     return s;
 }
 
@@ -73,7 +85,7 @@ void process_to_books(const fs::path& base_folder_path) {
     fs::path input_folder = base_folder_path;
     fs::path output_folder = base_folder_path / "books";
     std::mutex console_mutex;
-    std::vector<std::future<bool>> futures;
+    std::deque<std::future<bool>> futures;
     int success_count = 0;
     int failure_count = 0;
 
@@ -95,6 +107,20 @@ void process_to_books(const fs::path& base_folder_path) {
         if (entry.is_regular_file()) {
             std::string file_name = entry.path().filename().string();
             if (file_name.rfind(".bin") != std::string::npos && file_name.find("book_events") != std::string::npos) {
+                while (futures.size() >= MAX_CONCURRENT_TASKS) {
+                    try {
+                        if (futures.front().get()) {
+                            success_count++;
+                        } else {
+                            failure_count++;
+                        }
+                    } catch (const std::exception& e) {
+                        std::lock_guard<std::mutex> lock(console_mutex);
+                        std::cerr << "Exception while getting future result (histbook_task): " << e.what() << std::endl;
+                        failure_count++;
+                    }
+                    futures.pop_front();
+                }
                 futures.push_back(
                     std::async(std::launch::async, histbook_task, entry.path(), output_folder, std::ref(console_mutex))
                 );
@@ -112,145 +138,213 @@ void process_to_books(const fs::path& base_folder_path) {
     std::cout << "--- Finished processing raw files to books. Success: " << success_count << ", Failed: " << failure_count << " ---" << std::endl;
 }
 
-// Worker task for process_to_bars
-bool bar_generation_task(
-    const fs::path& input_file_path,
-    const std::string& date,
-    const std::string& feed,
-    const std::string& symbol,
-    bool is_fills_file,
+// Generic worker task for generating bars
+bool generate_bars_for_file_task(
+    const fs::path& input_file_to_process,
+    const std::string& bar_executable_path,
+    const std::string& date_str,
+    const std::string& symbol_str,
+    const std::optional<std::string>& feed_for_executable,
+    const std::string& log_file_type_description,
     std::mutex& console_mutex) {
     
-    std::string file_name = input_file_path.filename().string();
+    std::string processing_file_name = input_file_to_process.filename().string();
     std::ostringstream command_stream;
-    std::string task_description;
+    std::string task_description_log;
 
-    if (is_fills_file) {
-        {
-            std::lock_guard<std::mutex> lock(console_mutex);
-            std::cout << "Processing fills file: " << file_name << std::endl;
-        }
-        task_description = "ParseFills: " + file_name;
-        command_stream << "\"" << PARSE_FILLS_EXECUTABLE << "\""
-                       << " " << date
-                       << " " << feed
-                       << " " << symbol;
-    } else { // Tops file
-        {
-            std::lock_guard<std::mutex> lock(console_mutex);
-            std::cout << "Processing tops file: " << file_name << std::endl;
-        }
-        task_description = "ProcessTops: " + file_name;
-        command_stream << "\"" << PROCESS_TOPS_EXECUTABLE << "\""
-                       << " " << date
-                       << " " << feed
-                       << " " << symbol;
-    }
-    
-    if (!run_command(command_stream.str(), console_mutex, task_description)) {
+    // Initial log output
+    {
         std::lock_guard<std::mutex> lock(console_mutex);
-        std::cerr << "Failed to process " << (is_fills_file ? "fills" : "tops") << " file: " << file_name << std::endl;
+        std::cout << "Preparing to generate bars from " << log_file_type_description << " file: " << processing_file_name << std::endl;
+    }
+
+    task_description_log = bar_executable_path + " for " + processing_file_name;
+    command_stream << "\"" << bar_executable_path << "\""
+                   << " " << date_str;
+    if (feed_for_executable) {
+        command_stream << " " << *feed_for_executable;
+    }
+    command_stream << " " << symbol_str;
+    
+    if (!run_command(command_stream.str(), console_mutex, task_description_log)) {
+        std::lock_guard<std::mutex> lock(console_mutex);
+        std::cerr << "Failed to generate bars from " << log_file_type_description << " file: " << processing_file_name << std::endl;
         return false;
     }
     return true;
 }
 
-void process_to_bars(const fs::path& base_folder_path, const std::string& date, const std::string& feed) {
-    std::cout << "\n--- Processing book files to bars ---" << std::endl;
-    fs::path input_folder = base_folder_path / "books";
-    fs::path output_folder = base_folder_path / "bars";
+// Processes files (either from 'books' or 'mergedbooks') to generate bars
+void process_files_to_bars(
+    const fs::path& context_path,
+    const std::string& date_str,
+    const std::string& feed_or_mode_str
+) {
+    bool is_merged_flow = (to_lower(feed_or_mode_str) == "mergedbooks");
+    fs::path input_data_folder;
+    fs::path output_bars_folder;
+    std::string tops_executable;
+    std::string fills_executable;
+
+    if (is_merged_flow) {
+        std::cout << "\n--- Processing MERGED book files to bars (TOPS ONLY) ---" << std::endl;
+        input_data_folder = context_path / "mergedbooks";
+        output_bars_folder = context_path / "mergedbooks" / "bars";
+        tops_executable = PARSE_MERGED_TOPS_EXECUTABLE;
+    } else {
+        std::cout << "\n--- Processing book files from feed '" << feed_or_mode_str << "' to bars ---" << std::endl;
+        input_data_folder = context_path / "books";
+        output_bars_folder = context_path / "bars";
+        tops_executable = PROCESS_TOPS_EXECUTABLE;
+        fills_executable = PARSE_FILLS_EXECUTABLE;
+    }
+
     std::mutex console_mutex;
-    std::vector<std::future<bool>> futures;
+    std::deque<std::future<bool>> futures;
     int success_count = 0;
     int failure_count = 0;
 
     try {
-        fs::create_directories(output_folder);
+        fs::create_directories(output_bars_folder);
     } catch (const fs::filesystem_error& e) {
         std::lock_guard<std::mutex> lock(console_mutex);
-        std::cerr << "Error creating directory " << output_folder << ": " << e.what() << std::endl;
+        std::cerr << "Error creating bars output directory " << output_bars_folder << ": " << e.what() << std::endl;
     }
 
-    if (!fs::is_directory(input_folder)) {
+    if (!fs::is_directory(input_data_folder)) {
         std::lock_guard<std::mutex> lock(console_mutex);
-        std::cerr << "Error: " << input_folder << " is not a valid directory for book files." << std::endl;
+        std::cerr << "Error: Input data directory " << input_data_folder << " is not valid." << std::endl;
         return;
     }
 
-    for (const auto& entry : fs::directory_iterator(input_folder)) {
-        if (entry.is_regular_file()) {
-            std::string file_name = entry.path().filename().string();
-            if (file_name.rfind(".bin") != std::string::npos) {
-                std::vector<std::string> name_parts = split_string(file_name, '.');
-                if (name_parts.size() < 3) {
-                    std::lock_guard<std::mutex> lock(console_mutex);
-                    std::cout << "Skipping file with unexpected name format: " << file_name << std::endl;
-                    continue;
-                }
-                std::string symbol = name_parts[2];
-                if (name_parts.size() >= 1) {
-                    symbol = name_parts[0];
-                    if (name_parts.size() >= 3 && name_parts[2] != "bin") {
+    for (const auto& entry : fs::directory_iterator(input_data_folder)) {
+        if (!entry.is_regular_file()) continue;
+
+        std::string file_name = entry.path().filename().string();
+        if (file_name.rfind(".bin") == std::string::npos) continue;
+
+        std::vector<std::string> name_parts = split_string(file_name, '.');
+        std::string symbol;
+        std::string current_bar_exe;
+        std::string log_desc_prefix;
+        std::optional<std::string> feed_arg_for_task;
+
+        if (is_merged_flow) {
+            if (name_parts.size() == 3 && name_parts[2] == "bin") {
+                if (name_parts[0] == "merged_tops") {
+                    symbol = name_parts[1];
+                    current_bar_exe = tops_executable;
+                    log_desc_prefix = "merged tops";
+                } else if (name_parts[0] == "merged_fills") {
+                    {
+                        std::lock_guard<std::mutex> lock(console_mutex);
+                        std::cout << "Skipping merged_fills file: " << file_name << std::endl;
                     }
+                    continue;
                 } else {
-                    std::lock_guard<std::mutex> lock(console_mutex);
-                    std::cout << "Skipping file, cannot determine symbol: " << file_name << std::endl;
                     continue;
                 }
-
-                std::string file_name_lower = to_lower(file_name);
-                bool is_fills = false;
-
-                if (file_name_lower.find("fills") != std::string::npos) {
-                    is_fills = true;
-                } else if (file_name_lower.find("tops") != std::string::npos) {
-                    is_fills = false;
+            } else {
+                 continue;
+            }
+        } else {
+            if (name_parts.size() == 4 && name_parts[0] == to_upper(feed_or_mode_str) && name_parts[3] == "bin") {
+                symbol = name_parts[2];
+                feed_arg_for_task = feed_or_mode_str;
+                if (name_parts[1] == "book_tops") {
+                    current_bar_exe = tops_executable;
+                    log_desc_prefix = "book tops";
+                } else if (name_parts[1] == "book_fills") {
+                    current_bar_exe = fills_executable;
+                    log_desc_prefix = "book fills";
                 } else {
-                    std::lock_guard<std::mutex> lock(console_mutex);
-                    std::cout << "Skipping unrecognized file type in books folder: " << file_name << std::endl;
                     continue;
                 }
-                
-                futures.push_back(
-                    std::async(std::launch::async, bar_generation_task,
-                               entry.path(), date, feed, symbol, is_fills, std::ref(console_mutex))
-                );
+            } else {
+                continue;
             }
         }
-    }
-    for (auto& fut : futures) {
-        if (fut.get()) {
-            success_count++;
-        } else {
-            failure_count++;
+        
+        if (!symbol.empty() && !current_bar_exe.empty()) {
+            while (futures.size() >= MAX_CONCURRENT_TASKS) {
+                try {
+                    if (futures.front().get()) {
+                        success_count++;
+                    } else {
+                        failure_count++;
+                    }
+                } catch (const std::exception& e) {
+                    std::lock_guard<std::mutex> lock(console_mutex);
+                    std::cerr << "Exception while getting future result (generate_bars_task): " << e.what() << std::endl;
+                    failure_count++;
+                }
+                futures.pop_front();
+            }
+            futures.push_back(
+                std::async(std::launch::async, generate_bars_for_file_task,
+                           entry.path(), current_bar_exe, date_str, symbol,
+                           feed_arg_for_task, log_desc_prefix,
+                           std::ref(console_mutex))
+            );
         }
     }
-    std::cout << "--- Finished processing book files to bars. Success: " << success_count << ", Failed: " << failure_count << ". Processed files should be in relevant output directories. ---" << std::endl;
+
+    while (!futures.empty()) {
+        try {
+            if (futures.front().get()) {
+                success_count++;
+            } else {
+                failure_count++;
+            }
+        } catch (const std::exception& e) {
+            std::lock_guard<std::mutex> lock(console_mutex);
+            std::cerr << "Exception while getting future result (generate_bars_task cleanup): " << e.what() << std::endl;
+            failure_count++;
+        }
+        futures.pop_front();
+    }
+
+    std::cout << "--- Finished processing to bars. Success: " << success_count << ", Failed: " << failure_count 
+              << ". Bar files should be in " << output_bars_folder.string() << " ---" << std::endl;
 }
 
 int main() {
-    std::string date, feed;
+    std::string date_str, feed_str;
 
     std::cout << "Enter file date (yearMonthDay): ";
-    std::cin >> date;
-    std::cout << "Enter file feed: ";
-    std::cin >> feed;
+    std::cin >> date_str;
+    std::cout << "Enter file feed (e.g., iex, bats, or 'mergedbooks'): ";
+    std::cin >> feed_str;
 
-    fs::path base_folder_path = fs::path("/home/vir") / date / to_lower(feed);
+    fs::path top_level_date_path = fs::path("/home/vir") / date_str;
 
-    if (fs::is_directory(base_folder_path)) {
-        // Step 1: Process raw files into books
-        process_to_books(base_folder_path);
-        // Step 2: Process books into bars
-        fs::path books_dir = base_folder_path / "books";
-        if (fs::is_directory(books_dir)) {
-             process_to_bars(base_folder_path, date, feed);
+    if (to_lower(feed_str) == "mergedbooks") {
+        fs::path mergedbooks_input_dir = top_level_date_path / "mergedbooks";
+        if (fs::is_directory(mergedbooks_input_dir)) {
+            std::cout << "Mode: Processing 'mergedbooks'. Skipping HistBook stage." << std::endl;
+            process_files_to_bars(top_level_date_path, date_str, "mergedbooks");
         } else {
-            std::cerr << "Books directory (" << books_dir << ") not found. Skipping processing to bars." << std::endl;
+            std::cerr << "Error: Merged books directory " << mergedbooks_input_dir.string() << " not found." << std::endl;
+            return 1;
         }
     } else {
-        std::cerr << "Error: " << base_folder_path.string() << " is not a valid directory." << std::endl;
-        return 1;
+        fs::path specific_feed_path = top_level_date_path / to_lower(feed_str);
+        if (fs::is_directory(specific_feed_path)) {
+            // Step 1: Process raw files into books using HistBook
+            process_to_books(specific_feed_path);
+            
+            // Step 2: Process books into bars
+            fs::path books_dir_for_feed = specific_feed_path / "books";
+            if (fs::is_directory(books_dir_for_feed)) {
+                process_files_to_bars(specific_feed_path, date_str, feed_str);
+            } else {
+                std::cerr << "Books directory (" << books_dir_for_feed << ") not found for feed " << feed_str 
+                          << ". Skipping bar generation from books." << std::endl;
+            }
+        } else {
+            std::cerr << "Error: Specific feed directory " << specific_feed_path.string() << " is not a valid directory." << std::endl;
+            return 1;
+        }
     }
 
     return 0;
